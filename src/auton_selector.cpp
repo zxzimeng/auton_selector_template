@@ -11,7 +11,6 @@ namespace auton_selector {
         master_l = &controller;;
         json_data_l = nlohmann::json::parse(json_data);
         loadSelectionTree();
-        startSelection(json_data_l["order"]); // Start selection based on the defined order
     }
 
     // Selection destructor
@@ -25,8 +24,14 @@ namespace auton_selector {
     void Selector::loadSelectionTree() {
         for (const auto &[key, value]: json_data_l["choices"].items()) {
             std::vector<std::string> options = value["options"].get<std::vector<std::string> >();
+            for (auto& option: options) {
+                all_options[option]=1;
+            }
             nodes[key] = new SelectionNode(value["id"], options); // Store current node
         }
+
+        // Load the order from the JSON
+        order = json_data_l["order"].get<std::vector<std::string>>();
     }
 
     // Handle user selections
@@ -62,16 +67,81 @@ namespace auton_selector {
     }
 
     // Start the selection process based on order
-    void Selector::startSelection(const std::vector<std::string> &order) {
+    void Selector::startSelection() {
         for (const auto &key: order) {
             selectChoices(nodes[key]);
         }
-        confirmAndRun();
     }
 
+    void Selector::ask_selection(std::string choice) {
+        selectChoices(nodes[choice]);
+    }
+
+    void Selector::endSelection() {
+        confirmSelections();
+    }
+
+void Selector::confirmSelections() {
+    master_l->clear();
+
+    // Prepare to display all options
+    std::vector<std::string> formatted_options;
+
+    for (const auto& option : final_options) {
+        formatted_options.push_back(option); // No truncation, store the full option
+    }
+
+    // Initialize strings for the lines
+    std::string line1, line2;
+    int current_length = 0;
+
+    // Fill line 1 with options
+    for (size_t i = 0; i < formatted_options.size(); ++i) {
+        std::string option = formatted_options[i];
+        int option_length = option.length();
+
+        // Check if adding this option exceeds the line limit
+        if (current_length + option_length + (current_length > 0 ? 2 : 0) <= 15) {
+            if (current_length > 0) line1 += "  "; // Add spacing if not the first option
+            line1 += option;
+            current_length += option_length + (current_length > 0 ? 2 : 0); // Update length
+        } else {
+            // Move to line 2 if line 1 is full
+            if (line2.length() + option_length + (line2.length() > 0 ? 2 : 0) <= 15) {
+                if (line2.length() > 0) line2 += "  "; // Add spacing if not the first option
+                line2 += option;
+            }
+        }
+    }
+
+    // Display the lines
+    handle_set_line(0, line1); // Display the first line
+    handle_set_line(1, line2); // Display the second line
+
+    // Confirmation options on the last line
+    std::string confirmation_line = "[B] NO [A] YES";
+    handle_set_line(2, confirmation_line); // Display confirmation options
+
+    // Confirmation input loop
+    while (true) {
+        if (master_l->get_digital_new_press(pros::E_CONTROLLER_DIGITAL_B)) {
+            // Restart selection process
+            final_options.clear(); // Clear previous selections
+            startSelection(); // Restart the selection process
+            return; // Exit confirmation
+        }
+
+        if (master_l->get_digital_new_press(pros::E_CONTROLLER_DIGITAL_A)) {
+            // Confirm selections and call associated function
+            handle_set_line(2, "Confirmed. Await.");
+            return; // Exit confirmation
+        }
+    }
+}
+
     // Confirm and display the final options
-    void Selector::confirmAndRun() {
-        function_map[final_options];
+    void Selector::run() {
+        function_map[final_options]();
     }
 
     void Selector::map_function(std::set<std::string> dependents, std::function<void()> function) {
@@ -85,4 +155,30 @@ namespace auton_selector {
         master_l->set_text(line, 0, content);
         pros::delay(100);
     }
+
+    bool Selector::check() const {
+        for (const auto& pair : function_map) {
+            const auto& dependents = pair.first;
+
+            // Check if each dependent is in the valid options
+            for (const auto& dep : dependents) {
+                // Check if the dependent exists in all_options
+                if (all_options.find(dep) == all_options.end()) {
+                    std::cerr << "Invalid dependent: " << dep << " not in valid options." << std::endl;
+                    return false; // Return false if any dependent is invalid
+                }
+            }
+        }
+        return true; // All checks passed
+    }
+
+    bool Selector::is_option_selected(const std::set<std::string>& options) const {
+        for (const auto& option : options) {
+            if (final_options.find(option) != final_options.end()) {
+                return true; // Return true if any option is found
+            }
+        }
+        return false; // Return false if none of the options are found
+    }
+
 };
